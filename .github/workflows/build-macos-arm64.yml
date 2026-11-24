@@ -25,11 +25,12 @@ on:
         default: false
         type: boolean
       runner:
-        description: "GitHub-hosted Apple Silicon (arm64) runner image"
+        description: "GitHub-hosted macOS runner image (all produce native Apple Silicon arm64 builds)"
         required: false
-        default: "macos-26"
+        default: "macos-15-intel"
         type: choice
         options:
+          - macos-15-intel
           - macos-26
           - macos-15
 
@@ -43,7 +44,7 @@ concurrency:
 jobs:
   build_mac_arm64:
     name: Build macOS Apple Silicon (arm64)
-    runs-on: ${{ inputs.runner || 'macos-26' }}
+    runs-on: ${{ inputs.runner || 'macos-15-intel' }}
     timeout-minutes: 45
     env:
       VERSION: ${{ inputs.version || '0.1.11' }}
@@ -174,7 +175,44 @@ jobs:
           path: ${{ steps.stage_pnpm.outputs.dir }}
           key: ${{ steps.stage_pnpm_cache.outputs.cache-primary-key }}
 
-      - name: Launch check (smoke test DMG)
+      - name: Verify macOS arm64 DMG binaries and zero telemetry in app.asar
+        shell: bash
+        run: |
+          set -euo pipefail
+          mount="$RUNNER_TEMP/desktop-verify-dmg"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$(ls "$GITHUB_WORKSPACE"/release/*.dmg)"
+          trap 'hdiutil detach "$mount" -force >/dev/null || true' EXIT
+          app=$(ls -d "$mount"/*.app)
+          executable=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$app/Contents/Info.plist")
+
+          main_archs=$(lipo -archs "$app/Contents/MacOS/$executable")
+          echo "Main executable archs: $main_archs"
+          [[ "$main_archs" == *arm64* ]] || { echo "::error::Main executable is not arm64: $main_archs"; exit 1; }
+
+          rm_bin="$app/Contents/Resources/resource-monitor/t3-resource-monitor"
+          rm_archs=$(lipo -archs "$rm_bin")
+          echo "Resource monitor archs: $rm_archs"
+          [[ "$rm_archs" == *arm64* ]] || { echo "::error::t3-resource-monitor is not arm64: $rm_archs"; exit 1; }
+
+          unpacked="$app/Contents/Resources/app.asar.unpacked"
+          if [[ -d "$unpacked" ]]; then
+            while IFS= read -r -d '' bin; do
+              if file "$bin" | grep -q "Mach-O"; then
+                archs=$(lipo -archs "$bin")
+                echo "Native binary $(basename "$bin"): $archs"
+                [[ "$archs" == *arm64* ]] || { echo "::error::Native binary missing arm64 slice: $bin ($archs)"; exit 1; }
+              fi
+            done < <(find "$unpacked" -type f \( -name '*.node' -o -name '*.dylib' -o -perm -111 \) -print0)
+          fi
+
+          if LC_ALL=C grep -aE "ingest\.t3\.codes|phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m|X-Axiom-Dataset|install\.owner_observed" "$app/Contents/Resources/app.asar"; then
+            echo "::error::Telemetry strings were found in packaged app.asar!"
+            exit 1
+          fi
+          echo "Verified: DMG contains valid arm64 binaries and zero telemetry strings in app.asar."
+
+      - name: Launch check (smoke test DMG on native ARM64)
+        if: runner.arch == 'ARM64'
         shell: bash
         run: |
           set -euo pipefail
@@ -188,7 +226,7 @@ jobs:
             --executable "$app/Contents/MacOS/$executable"
 
       - name: Upload launch check output on failure
-        if: failure()
+        if: failure() && runner.arch == 'ARM64'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-launch-check-mac-arm64
