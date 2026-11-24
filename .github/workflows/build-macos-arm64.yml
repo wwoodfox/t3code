@@ -281,6 +281,12 @@ jobs:
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$tag" release-publish/* --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --title "$title" --notes "$notes"
+          elif gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; then
+            gh release create "$tag" release-publish/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$title" \
+              --notes "$notes" \
+              --verify-tag
           else
             gh release create "$tag" release-publish/* \
               --repo "$GITHUB_REPOSITORY" \
