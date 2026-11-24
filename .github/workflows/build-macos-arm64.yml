@@ -24,6 +24,14 @@ on:
         required: false
         default: false
         type: boolean
+      runner:
+        description: "GitHub-hosted Apple Silicon (arm64) runner image"
+        required: false
+        default: "macos-26"
+        type: choice
+        options:
+          - macos-26
+          - macos-15
 
 permissions:
   contents: write
@@ -35,7 +43,7 @@ concurrency:
 jobs:
   build_mac_arm64:
     name: Build macOS Apple Silicon (arm64)
-    runs-on: macos-15
+    runs-on: ${{ inputs.runner || 'macos-26' }}
     timeout-minutes: 45
     env:
       VERSION: ${{ inputs.version || '0.1.11' }}
