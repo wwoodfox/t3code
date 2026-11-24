@@ -1,0 +1,244 @@
+name: Build macOS arm64 (No Telemetry)
+
+on:
+  push:
+    branches:
+      - "*-no-telemetry"
+      - "no-telemetry-*"
+    tags:
+      - "no-telemetry-*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version string baked into the macOS app (e.g. 0.1.11)"
+        required: false
+        default: "0.1.11"
+        type: string
+      create_release:
+        description: "Publish a GitHub Release with the built DMG and ZIP"
+        required: false
+        default: true
+        type: boolean
+      enable_t3_connect:
+        description: "Include public T3 Connect / Clerk configuration (.env.example)"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-macos-arm64-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_mac_arm64:
+    name: Build macOS Apple Silicon (arm64)
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ inputs.version || '0.1.11' }}
+      CREATE_RELEASE: ${{ github.event_name != 'workflow_dispatch' || inputs.create_release }}
+      ENABLE_T3_CONNECT: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_t3_connect || false }}
+    steps:
+      # Sparse checkout skips vendored .repos/ gitlinks that break actions/checkout cleanup.
+      - name: Checkout
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git -c "http.extraheader=$auth_header" fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -c checkout.workers=0 checkout --detach FETCH_HEAD
+
+      - name: Verify telemetry code is removed from source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if rg -n "ingest\.t3\.codes|phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m|X-Axiom-Dataset|T3CODE_POSTHOG_KEY" apps/server/src apps/desktop/src apps/web/src packages/shared/src packages/client-runtime/src --glob '!*.test.*'; then
+            echo "::error::Telemetry references were found in source code!"
+            exit 1
+          fi
+          echo "Verified: no telemetry endpoints or keys in source."
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --filter=@t3tools/desktop... --filter=@t3tools/web... --filter=t3... --filter=@t3tools/scripts...
+
+      - name: Resolve staged install cache
+        id: stage_pnpm
+        shell: bash
+        run: |
+          echo "dir=$RUNNER_TEMP/desktop-stage-pnpm" >> "$GITHUB_OUTPUT"
+          echo "prefix=desktop-stage-pnpm-v2-mac-arm64-$(date -u +%G-%V)-" >> "$GITHUB_OUTPUT"
+
+      - name: Restore staged install cache
+        id: stage_pnpm_cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.stage_pnpm.outputs.dir }}
+          key: ${{ steps.stage_pnpm.outputs.prefix }}${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ${{ steps.stage_pnpm.outputs.prefix }}
+
+      - name: Mark staged install cache
+        shell: bash
+        run: mkdir -p "${{ steps.stage_pnpm.outputs.dir }}" && touch "$RUNNER_TEMP/desktop-stage-pnpm.marker"
+
+      - name: Cache resource monitor
+        id: resource_monitor_cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: native/resource-monitor/target/aarch64-apple-darwin/release/t3-resource-monitor
+          key: resource-monitor-aarch64-apple-darwin-${{ hashFiles('native/resource-monitor/Cargo.lock', 'native/resource-monitor/Cargo.toml', 'native/resource-monitor/src/**') }}
+
+      - name: Setup Rust
+        if: steps.resource_monitor_cache.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin
+
+      - name: Align package versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/update-release-package-versions.ts "$VERSION"
+          if [[ "$ENABLE_T3_CONNECT" == "true" ]]; then
+            cp .env.example .env
+          fi
+
+      - name: Build desktop JS bundle
+        shell: bash
+        run: vp run build:desktop:bundle
+
+      - name: Verify built bundle contains no telemetry endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          if rg -n "ingest\.t3\.codes|phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m|X-Axiom-Dataset|install\.owner_observed|server\.boot\.heartbeat|provider\.turn\.completed|t3code:analytics-device-id|T3CODE_POSTHOG_KEY" apps/server/dist apps/desktop/dist-electron apps/web/dist; then
+            echo "::error::Telemetry strings were found in built bundle!"
+            exit 1
+          fi
+          echo "Verified: built bundle contains zero telemetry strings."
+
+      - name: Build resource monitor (aarch64-apple-darwin)
+        if: steps.resource_monitor_cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target aarch64-apple-darwin
+
+      - name: Package macOS arm64 DMG and ZIP
+        shell: bash
+        env:
+          pnpm_config_cache_dir: ${{ steps.stage_pnpm.outputs.dir }}/cache
+          pnpm_config_store_dir: ${{ steps.stage_pnpm.outputs.dir }}/store
+          pnpm_config_prefer_offline: "true"
+          T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR: "true"
+        run: |
+          set -euo pipefail
+          vp run dist:desktop:artifact \
+            --platform mac \
+            --target dmg \
+            --arch arm64 \
+            --build-version "$VERSION" \
+            --skip-build \
+            --verbose
+
+      - name: Check staged install cache for new content
+        id: stage_pnpm_changed
+        shell: bash
+        run: |
+          dir="${{ steps.stage_pnpm.outputs.dir }}"
+          new=$(find "$dir/cache/v12" "$dir/store/v11/files" -type f -newer "$RUNNER_TEMP/desktop-stage-pnpm.marker" 2>/dev/null | wc -l | tr -d ' ')
+          echo "Staged installs added $new cached files."
+          echo "changed=$([[ "$new" -gt 0 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Save staged install cache
+        if: steps.stage_pnpm_changed.outputs.changed == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.stage_pnpm.outputs.dir }}
+          key: ${{ steps.stage_pnpm_cache.outputs.cache-primary-key }}
+
+      - name: Launch check (smoke test DMG)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mount="$RUNNER_TEMP/desktop-launch-dmg"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$(ls "$GITHUB_WORKSPACE"/release/*.dmg)"
+          trap 'hdiutil detach "$mount" -force >/dev/null || true' EXIT
+          app=$(ls -d "$mount"/*.app)
+          executable=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$app/Contents/Info.plist")
+          node scripts/smoke-desktop-app.ts \
+            --artifacts-dir "$RUNNER_TEMP/desktop-launch-check" \
+            --executable "$app/Contents/MacOS/$executable"
+
+      - name: Upload launch check output on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-launch-check-mac-arm64
+          path: ${{ runner.temp }}/desktop-launch-check
+          if-no-files-found: ignore
+
+      - name: Collect macOS arm64 artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-publish
+          shopt -s nullglob
+          for file in release/*.dmg release/*.zip; do
+            cp "$file" release-publish/
+          done
+          (cd release-publish && shasum -a 256 * > SHA256SUMS.txt)
+          ls -lh release-publish/
+
+      - name: Upload macOS arm64 artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: t3code-v${{ env.VERSION }}-mac-arm64-no-telemetry
+          path: release-publish/*
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Publish GitHub Release
+        if: env.CREATE_RELEASE == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="no-telemetry-v${VERSION}"
+          title="T3 Code v${VERSION} (No Telemetry, macOS arm64)"
+          notes=$(cat <<EOF
+          Telemetry-free build of T3 Code **v${VERSION}** for Apple Silicon Macs (\`arm64\`).
+
+          ### What was removed
+          - Product usage analytics (\`ingest.t3.codes\` / PostHog \`AnalyticsService\`, \`ProviderUsageAnalytics\`, \`DelegatedTaskAnalytics\`, \`FeatureUsage\`)
+          - Account & installation fingerprinting (\`Identify.ts\` reading \`~/.codex/auth.json\`, \`~/.claude.json\`, \`anonymous-id\`, and \`clientOwner\`/\`clientDevice\` hashing)
+          - Axiom / OpenTelemetry relay connection tracing (server, desktop, web, and mobile) and mobile crash reporting
+          - Onboarding telemetry notice UI
+
+          ### First-launch note (ad-hoc signed build)
+          Because this build is compiled via GitHub Actions without an Apple Developer ID certificate, macOS Gatekeeper may warn on first launch. If so, run:
+          \`\`\`bash
+          xattr -cr "/Applications/T3 Code.app"
+          \`\`\`
+          EOF
+          )
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" release-publish/* --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --title "$title" --notes "$notes"
+          else
+            gh release create "$tag" release-publish/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$title" \
+              --notes "$notes" \
+              --target "$GITHUB_SHA"
+          fi
