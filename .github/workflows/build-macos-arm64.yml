@@ -70,11 +70,47 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if rg -n "ingest\.t3\.codes|phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m|X-Axiom-Dataset|T3CODE_POSTHOG_KEY" apps/server/src apps/desktop/src apps/web/src packages/shared/src packages/client-runtime/src --glob '!*.test.*'; then
+          if rg -n "ingest\.t3\.codes|phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m|X-Axiom-Dataset|T3CODE_POSTHOG_KEY|expo-observe|t3code\.analytics\.device-id" apps/server/src apps/desktop/src apps/web/src apps/mobile/src packages/shared/src packages/client-runtime/src --glob '!*.test.*'; then
             echo "::error::Telemetry references were found in source code!"
             exit 1
           fi
           echo "Verified: no telemetry endpoints or keys in source."
+
+      - name: Select Xcode 26+ (required for Apple Speech helper)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Installed Xcode bundles:"
+          ls -ld /Applications/Xcode*.app || true
+          current_major=$(xcodebuild -version 2>/dev/null | awk '/^Xcode /{split($2,v,"."); print v[1]}' || true)
+          echo "Current default Xcode major version: ${current_major:-unknown}"
+          if [[ "${current_major:-0}" -lt 26 ]]; then
+            best_app=""
+            best_ver=""
+            for app in /Applications/Xcode*.app; do
+              [[ -d "$app" ]] || continue
+              ver=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$app/Contents/Info.plist" 2>/dev/null || true)
+              major=${ver%%.*}
+              [[ "$major" =~ ^[0-9]+$ && "$major" -ge 26 ]] || continue
+              is_stable=1
+              [[ "$app" == *beta* || "$app" == *Beta* ]] && is_stable=0
+              IFS='.' read -r v1 v2 v3 _ <<< "${ver}.0.0"
+              v1=${v1//[!0-9]/}; v2=${v2//[!0-9]/}; v3=${v3//[!0-9]/}
+              key=$(printf "%d.%04d.%04d.%04d" "$is_stable" "$((10#${v1:-0}))" "$((10#${v2:-0}))" "$((10#${v3:-0}))")
+              if [[ -z "$best_ver" || "$key" > "$best_ver" ]]; then
+                best_ver="$key"
+                best_app="$app"
+              fi
+            done
+            if [[ -z "$best_app" ]]; then
+              echo "::error::Xcode 26+ is required to build native/apple-speech, but none was found in /Applications."
+              exit 1
+            fi
+            echo "Selecting Xcode 26+: $best_app"
+            sudo xcode-select -s "$best_app/Contents/Developer"
+          fi
+          xcodebuild -version
+          xcrun swiftc --version
 
       - name: Setup dependencies
         uses: ./.github/actions/setup-ci-deps
@@ -131,7 +167,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if rg -n "ingest\.t3\.codes|phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m|X-Axiom-Dataset|install\.owner_observed|server\.boot\.heartbeat|provider\.turn\.completed|t3code:analytics-device-id|T3CODE_POSTHOG_KEY" apps/server/dist apps/desktop/dist-electron apps/web/dist; then
+          if rg -n "ingest\.t3\.codes|phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m|X-Axiom-Dataset|install\.owner_observed|server\.boot\.heartbeat|provider\.turn\.completed|agent\.feedback|t3code:analytics-device-id|T3CODE_POSTHOG_KEY" apps/server/dist apps/desktop/dist-electron apps/web/dist --glob '!*.map'; then
             echo "::error::Telemetry strings were found in built bundle!"
             exit 1
           fi
@@ -194,6 +230,12 @@ jobs:
           echo "Resource monitor archs: $rm_archs"
           [[ "$rm_archs" == *arm64* ]] || { echo "::error::t3-resource-monitor is not arm64: $rm_archs"; exit 1; }
 
+          speech_bin="$app/Contents/Resources/apple-speech/t3-apple-speech"
+          [[ -f "$speech_bin" ]] || { echo "::error::Missing bundled Apple Speech helper: $speech_bin"; exit 1; }
+          speech_archs=$(lipo -archs "$speech_bin")
+          echo "Apple Speech helper archs: $speech_archs"
+          [[ "$speech_archs" == *arm64* ]] || { echo "::error::t3-apple-speech is not arm64: $speech_archs"; exit 1; }
+
           unpacked="$app/Contents/Resources/app.asar.unpacked"
           if [[ -d "$unpacked" ]]; then
             while IFS= read -r -d '' bin; do
@@ -205,7 +247,7 @@ jobs:
             done < <(find "$unpacked" -type f \( -name '*.node' -o -name '*.dylib' -o -perm -111 \) -print0)
           fi
 
-          if LC_ALL=C grep -aE "ingest\.t3\.codes|phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m|X-Axiom-Dataset|install\.owner_observed" "$app/Contents/Resources/app.asar"; then
+          if LC_ALL=C grep -aE "ingest\.t3\.codes|phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m|X-Axiom-Dataset|install\.owner_observed|server\.boot\.heartbeat|provider\.turn\.completed|agent\.feedback|t3code:analytics-device-id" "$app/Contents/Resources/app.asar"; then
             echo "::error::Telemetry strings were found in packaged app.asar!"
             exit 1
           fi
@@ -266,9 +308,9 @@ jobs:
           Telemetry-free build of T3 Code **v${VERSION}** for Apple Silicon Macs (\`arm64\`).
 
           ### What was removed
-          - Product usage analytics (\`ingest.t3.codes\` / PostHog \`AnalyticsService\`, \`ProviderUsageAnalytics\`, \`DelegatedTaskAnalytics\`, \`FeatureUsage\`)
-          - Account & installation fingerprinting (\`Identify.ts\` reading \`~/.codex/auth.json\`, \`~/.claude.json\`, \`anonymous-id\`, and \`clientOwner\`/\`clientDevice\` hashing)
-          - Axiom / OpenTelemetry relay connection tracing (server, desktop, web, and mobile) and mobile crash reporting
+          - Product usage analytics (\`ingest.t3.codes\` / PostHog \`AnalyticsService\`, \`ProviderUsageAnalytics\`, \`DelegatedTaskAnalytics\`, \`FeatureUsage\`, and \`agent.feedback\` reporting)
+          - Account & installation fingerprinting (\`Identify.ts\` reading \`~/.codex/auth.json\`, \`~/.claude.json\`, \`anonymous-id\`, \`clientOwner\`/\`clientDevice\` hashing, and mobile \`t3code.analytics.device-id\`)
+          - Axiom / OpenTelemetry relay connection tracing (server, desktop, web, and mobile) and mobile \`expo-observe\` crash reporting
           - Onboarding telemetry notice UI
 
           ### First-launch note (ad-hoc signed build)
