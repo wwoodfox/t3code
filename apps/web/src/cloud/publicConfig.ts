@@ -5,8 +5,6 @@ import {
 import { normalizeSecureRelayUrl } from "@t3tools/shared/relayUrl";
 import * as Schema from "effect/Schema";
 
-import { isHostedStaticApp } from "../hostedPairing";
-
 export class CloudPublicConfigMissingError extends Schema.TaggedError<CloudPublicConfigMissingError>()(
   "CloudPublicConfigMissingError",
   {
@@ -33,15 +31,6 @@ export function trimNonEmpty(value: string | undefined): string | null {
   return value?.trim() || null;
 }
 
-function normalizeSecureUrl(value: string): string | null {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" ? url.toString() : null;
-  } catch {
-    return null;
-  }
-}
-
 export function resolveCloudPublicConfig(): CloudPublicConfig {
   return {
     clerkPublishableKey: trimNonEmpty(
@@ -52,46 +41,23 @@ export function resolveCloudPublicConfig(): CloudPublicConfig {
       (import.meta.env.VITE_T3CODE_RELAY_URL as string | undefined) ?? "",
     ),
     relayTracing: {
-      tracesUrl: normalizeSecureUrl(
-        (import.meta.env.VITE_RELAY_OTLP_TRACES_URL as string | undefined) ?? "",
-      ),
-      tracesDataset: trimNonEmpty(
-        import.meta.env.VITE_RELAY_OTLP_TRACES_DATASET as string | undefined,
-      ),
-      tracesToken: trimNonEmpty(import.meta.env.VITE_RELAY_OTLP_TRACES_TOKEN as string | undefined),
+      tracesUrl: null,
+      tracesDataset: null,
+      tracesToken: null,
     },
   };
 }
 
-let desktopRelayTelemetry: boolean | null = null;
-let serverRelayTelemetry: boolean | null = null;
+/** Telemetry removed: server relay telemetry setting is ignored. */
+export function setServerRelayTelemetry(_allowed: boolean | null): void {}
 
-export function setServerRelayTelemetry(allowed: boolean | null): void {
-  serverRelayTelemetry = allowed;
-}
-
+/** Telemetry removed: relay spans are never exported. */
 export function relayTelemetryEnabled(): boolean | null {
-  if (typeof window === "undefined") return true;
-  if (window.desktopBridge) {
-    desktopRelayTelemetry ??= window.desktopBridge.getRelayTelemetryEnabled();
-    return desktopRelayTelemetry;
-  }
-  return serverRelayTelemetry ?? (isHostedStaticApp() ? true : null);
+  return false;
 }
 
 export function resolveRelayTracingConfig() {
-  // The relay exporter is created during module initialization, so this must be synchronous.
-  if (relayTelemetryEnabled() === false) {
-    return null;
-  }
-  const { relayTracing } = resolveCloudPublicConfig();
-  return relayTracing.tracesUrl && relayTracing.tracesDataset && relayTracing.tracesToken
-    ? {
-        tracesUrl: relayTracing.tracesUrl,
-        tracesDataset: relayTracing.tracesDataset,
-        tracesToken: relayTracing.tracesToken,
-      }
-    : null;
+  return null;
 }
 
 export function hasCloudPublicConfig(): boolean {

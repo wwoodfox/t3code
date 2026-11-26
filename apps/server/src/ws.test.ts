@@ -83,7 +83,6 @@ import * as AcpRegistryRuntimeCoordinator from "@t3tools/provider-acp-registry/s
 import * as AcpRegistrySupport from "@t3tools/provider-acp-registry/server/AcpRegistrySupport";
 import * as AgentSessionImporter from "./project/AgentSessionImporter.ts";
 import * as AgentSessionScanner from "./project/AgentSessionScanner.ts";
-import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as AntigravityInstallation from "./provider/AntigravityInstallation.ts";
 import * as ProviderInstallation from "./provider/providerInstallation.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
@@ -845,7 +844,6 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(AcpRegistrySessions.AcpRegistrySessions)({}),
   Layer.mock(AgentSessionImporter.AgentSessionImporter)({}),
   Layer.mock(AgentSessionScanner.AgentSessionScanner)({}),
-  Layer.mock(AnalyticsService.AnalyticsService)({}),
   Layer.mock(AntigravityInstallation.AntigravityInstallation)({ managedDirectory: "/unused" }),
   Layer.mock(BackgroundPolicy.BackgroundPolicy)({}),
   Layer.mock(CheckpointDiffQuery.CheckpointDiffQuery)({}),
@@ -972,7 +970,6 @@ it.live.each([
           markDisconnected: () => Effect.void,
           awaitInvalidation: () => Effect.never,
         }),
-        Layer.mock(AnalyticsService.AnalyticsService)({ recordOwners: () => Effect.void }),
         Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
           namedProjectsRoot: process.cwd(),
         }),
@@ -1171,7 +1168,6 @@ it.effect.each([
               method: "browser-session-cookie",
               scopes: [],
             },
-            {},
             yield* ServerBrowser.ServerBrowser,
             () => Effect.void,
             { secretReferences: true },
@@ -1326,7 +1322,6 @@ it.effect("access changes made while the snapshot loads reach the client after i
             method: "browser-session-cookie",
             scopes: [],
           },
-          {},
           yield* ServerBrowser.ServerBrowser,
           () => Effect.void,
           { secretReferences: true },
@@ -1542,7 +1537,6 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
             method: "browser-session-cookie",
             scopes: [],
           },
-          {},
           yield* ServerBrowser.ServerBrowser,
           () => Effect.void,
           { secretReferences: true },
@@ -1903,7 +1897,6 @@ it.effect("a missing thread worktree gets its project's skills in the cwd snapsh
             method: "browser-session-cookie",
             scopes: [],
           },
-          {},
           yield* ServerBrowser.ServerBrowser,
           () => Effect.void,
           { secretReferences: true },
@@ -1984,7 +1977,6 @@ it.effect(
                 method: "browser-session-cookie",
                 scopes: [...scopes],
               },
-              {},
               browser,
               () => Effect.void,
               { secretReferences: true },
@@ -2075,7 +2067,6 @@ it.effect(
                 method: "browser-session-cookie",
                 scopes: [...scopes],
               },
-              {},
               browser,
               () => Effect.void,
               { secretReferences: true },
@@ -2160,7 +2151,6 @@ it.effect("a git action that fails partway still refreshes the repository status
             method: "browser-session-cookie",
             scopes: [AuthSourceControlWriteScope],
           },
-          {},
           yield* ServerBrowser.ServerBrowser,
           () => Effect.void,
           { secretReferences: true },
@@ -2240,7 +2230,6 @@ it.effect("a publish whose push fails still refreshes the new remote", () =>
             method: "browser-session-cookie",
             scopes: [AuthSourceControlWriteScope],
           },
-          {},
           yield* ServerBrowser.ServerBrowser,
           () => Effect.void,
           { secretReferences: true },
@@ -2831,7 +2820,6 @@ it.effect("ACP session RPCs list a thread missing its history and repair it on i
             method: "browser-session-cookie",
             scopes: [],
           },
-          {},
           yield* ServerBrowser.ServerBrowser,
           () => Effect.void,
           { secretReferences: true },
@@ -2985,7 +2973,6 @@ const makeWorkflowClient = Effect.fn("test.makeWorkflowClient")(function* (
           method: "browser-session-cookie",
           scopes: [...scopes],
         },
-        {},
         yield* ServerBrowser.ServerBrowser,
         () => Effect.void,
         { secretReferences: true },
@@ -3053,7 +3040,6 @@ const makeAcpRegistryClient = Effect.fn("test.makeAcpRegistryClient")(function* 
           method: "browser-session-cookie",
           scopes,
         },
-        {},
         yield* ServerBrowser.ServerBrowser,
         () => Effect.void,
         { secretReferences: true },
